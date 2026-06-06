@@ -50,6 +50,16 @@ static void ctm_panel_dev_cb(lv_event_t *e);
 
 static void ctm_panel_resize_cb(lv_event_t *e);
 
+static void ctm_panel_plugall_cb(lv_event_t *e);
+
+static void ctm_panel_unplugall_cb(lv_event_t *e);
+
+static void ctm_panel_settings_cb(lv_event_t *e);
+
+static void ctm_settings_apply_cb(lv_event_t *e);
+
+static void open_ctm_settings(int index);
+
 const lv_fragment_class_t streaming_controller_class = {
         .constructor_cb = constructor,
         .destructor_cb = controller_dtor,
@@ -293,6 +303,20 @@ static void toggle_vmouse(lv_event_t *event) {
 
 static void ctm_panel_populate(lv_obj_t *list) {
     lv_obj_clean(list);
+
+    lv_obj_t *pall = lv_list_add_btn(list, NULL, locstr("Plug ALL"));
+    lv_obj_set_style_bg_color(pall, lv_palette_main(LV_PALETTE_GREEN), 0);
+    lv_obj_set_style_bg_opa(pall, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(pall, ctm_panel_plugall_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *uall = lv_list_add_btn(list, NULL, locstr("Unplug ALL"));
+    lv_obj_set_style_bg_color(uall, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_set_style_bg_opa(uall, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(uall, ctm_panel_unplugall_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sett = lv_list_add_btn(list, NULL, locstr("DS4/DS5 settings"));
+    lv_obj_set_style_bg_color(sett, lv_palette_darken(LV_PALETTE_BLUE, 1), 0);
+    lv_obj_set_style_bg_opa(sett, LV_OPA_COVER, 0);
+    lv_obj_add_event_cb(sett, ctm_panel_settings_cb, LV_EVENT_CLICKED, NULL);
+
     ctm_bridge_dev_t devs[16];
     int n = ctm_bridge_list(devs, 16);
     if (n == 0) {
@@ -347,6 +371,90 @@ static void ctm_panel_resize_cb(lv_event_t *e) {
     lv_obj_t *content = lv_msgbox_get_content(msgbox);
     lv_coord_t height = lv_obj_get_content_height(msgbox);
     lv_obj_set_height(content, height - title_height);
+}
+
+/* --- DS4/DS5 per-controller settings dialog ----------------------------------- */
+static int s_set_index = -1;
+static lv_obj_t *s_set_audio, *s_set_hvol, *s_set_svol, *s_set_lat, *s_set_hap;
+
+static void ctm_panel_plugall_cb(lv_event_t *e) {
+    lv_obj_t *list = lv_obj_get_parent(lv_event_get_target(e));
+    ctm_bridge_plug_all();
+    ctm_panel_populate(list);
+}
+
+static void ctm_panel_unplugall_cb(lv_event_t *e) {
+    lv_obj_t *list = lv_obj_get_parent(lv_event_get_target(e));
+    ctm_bridge_unplug_all();
+    ctm_panel_populate(list);
+}
+
+static void ctm_settings_apply_cb(lv_event_t *e) {
+    LV_UNUSED(e);
+    if (s_set_index < 0) {
+        return;
+    }
+    ctm_bridge_settings_t s;
+    if (!ctm_bridge_get_settings(s_set_index, &s)) {
+        return;
+    }
+    s.audio_mode = (int) lv_dropdown_get_selected(s_set_audio);
+    s.headset_volume_percent = (int) lv_slider_get_value(s_set_hvol);
+    s.speaker_volume_percent = (int) lv_slider_get_value(s_set_svol);
+    s.latency_ms = (int) lv_slider_get_value(s_set_lat);
+    s.haptics_gain_centi = (int) lv_slider_get_value(s_set_hap);
+    ctm_bridge_set_settings(s_set_index, &s);
+}
+
+static lv_obj_t *ctm_settings_slider(lv_obj_t *parent, const char *label, int val, int min, int max) {
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text(l, label);
+    lv_obj_t *sl = lv_slider_create(parent);
+    lv_obj_set_width(sl, LV_PCT(90));
+    lv_slider_set_range(sl, min, max);
+    lv_slider_set_value(sl, val, LV_ANIM_OFF);
+    lv_obj_add_event_cb(sl, ctm_settings_apply_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    return sl;
+}
+
+static void open_ctm_settings(int index) {
+    ctm_bridge_settings_t s;
+    if (!ctm_bridge_get_settings(index, &s)) {
+        return;
+    }
+    s_set_index = index;
+    lv_obj_t *mb = lv_msgbox_create(NULL, locstr("Controller Settings"), NULL, NULL, true);
+    lv_obj_add_event_cb(mb, ctm_panel_resize_cb, LV_EVENT_SIZE_CHANGED, NULL);
+    lv_obj_set_size(mb, LV_PCT(70), LV_PCT(85));
+    lv_obj_t *c = lv_msgbox_get_content(mb);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *al = lv_label_create(c);
+    lv_label_set_text(al, locstr("Audio mode"));
+    s_set_audio = lv_dropdown_create(c);
+    lv_dropdown_set_options(s_set_audio, "Auto\nOff\nSpeaker\nHeadset\nBoth");
+    lv_dropdown_set_selected(s_set_audio, (uint16_t) s.audio_mode);
+    lv_obj_set_width(s_set_audio, LV_PCT(90));
+    lv_obj_add_event_cb(s_set_audio, ctm_settings_apply_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    s_set_hvol = ctm_settings_slider(c, locstr("Headset volume %"), s.headset_volume_percent, 0, 100);
+    s_set_svol = ctm_settings_slider(c, locstr("Speaker volume %"), s.speaker_volume_percent, 0, 100);
+    s_set_lat = ctm_settings_slider(c, locstr("Latency (ms)"), s.latency_ms, 0, 40);
+    s_set_hap = ctm_settings_slider(c, locstr("Haptics gain (x0.01)"), s.haptics_gain_centi, 0, 300);
+    lv_obj_center(mb);
+}
+
+static void ctm_panel_settings_cb(lv_event_t *e) {
+    LV_UNUSED(e);
+    ctm_bridge_dev_t devs[16];
+    int n = ctm_bridge_list(devs, 16);
+    for (int i = 0; i < n; ++i) {
+        if (devs[i].plugged &&
+            (strcmp(devs[i].kind, "ds5") == 0 || strcmp(devs[i].kind, "ds4") == 0)) {
+            open_ctm_settings(devs[i].index);
+            return;
+        }
+    }
 }
 
 static void open_ctm_panel(lv_event_t *event) {

@@ -48,6 +48,27 @@ int ctm_bridge_list(ctm_bridge_dev_t *out, int max);
 bool ctm_bridge_plug_index(int index);
 void ctm_bridge_unplug_index(int index);
 
+/* Plug every recognised controller (skips already-plugged); returns count newly
+ * plugged. Unplug all releases every bridged session. */
+int ctm_bridge_plug_all(void);
+void ctm_bridge_unplug_all(void);
+
+/* Flat per-controller settings (mirrors the bridge's tv_bridge_worker_settings_t,
+ * so moonlight doesn't need the ctmcore headers). */
+typedef struct {
+    int kind;                     /* 0 = hid, 4 = ds4, 5 = ds5 */
+    int audio_mode;               /* 0 Auto / 1 Off / 2 Speaker / 3 Headset / 4 Both */
+    int latency_ms;
+    int haptics_gain_centi;
+    int headset_volume_percent;
+    int speaker_volume_percent;
+    int ds5_patch_high, ds5_patch_low, ds5_patch2_high, ds5_patch2_low;
+} ctm_bridge_settings_t;
+
+/* Get / apply (live) the per-controller settings for the device at the index. */
+bool ctm_bridge_get_settings(int index, ctm_bridge_settings_t *out);
+void ctm_bridge_set_settings(int index, const ctm_bridge_settings_t *in);
+
 #ifdef __cplusplus
 }
 #endif

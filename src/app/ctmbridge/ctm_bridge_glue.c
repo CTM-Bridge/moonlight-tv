@@ -13,9 +13,29 @@
 #include "ctm_state.h"   /* core API + shared globals (g_running, g_scan, ...) */
 
 static bool s_active = false;
-/* Auto-plug is OFF for now: during testing the user picks a controller from the
- * overlay panel. The code is kept so we can flip this on to auto-plug ALL later. */
-static bool s_autoplug = false;
+/* Auto-plug ALL recognised controllers on stream start. The overlay panel can
+ * still plug/unplug individually or all at once. */
+static bool s_autoplug = true;
+
+/* Enumerate + build the logical model + Stage-1 puck enumeration capture. The
+ * Steam puck only exposes its full composite if g_puck_enum is cached BEFORE the
+ * plug; the standalone app does this in refresh_devices(), so the glue must too. */
+static void ctm_glue_enumerate(void)
+{
+    enumerate_devices(&g_scan);
+    build_logical_devices(&g_scan, &g_devices);
+    bool puck = false;
+    for (int i = 0; i < g_devices.count; ++i) {
+        if (strcmp(bridge_kind_for_item(&g_devices.items[i]), "puck") == 0) {
+            puck_enum_capture(g_devices.items[i].vid, g_devices.items[i].pid);
+            puck = true;
+            break;
+        }
+    }
+    if (!puck) {
+        g_puck_enum.valid = 0;
+    }
+}
 
 bool ctm_bridge_start(void)
 {
@@ -40,30 +60,13 @@ bool ctm_bridge_start(void)
     if (!discover_agent_once()) {
         log_append("ctm glue: no CTM agent found on the network");
     }
-    enumerate_devices(&g_scan);
-    build_logical_devices(&g_scan, &g_devices);
+    ctm_glue_enumerate();
     // Fill g_bt_macs so the stopSniff worker actually keeps the BT controllers
     // out of sniff mode (the worker reads this list every 500 ms).
     publish_bt_macs();
 
-    /* Auto-plug only when enabled; it bridges EVERY recognised controller (no
-     * break = "autoplug all"). Off by default for now -> manual plug via panel. */
     if (s_autoplug) {
-        int count = 0;
-        for (int i = 0; i < g_devices.count; ++i) {
-            logical_device_t *item = &g_devices.items[i];
-            const char *kind = bridge_kind_for_item(item);
-            /* bridge_kind_for_item() returns "hid" (never NULL) for unrecognised
-             * devices; only auto-bridge real game controllers. */
-            if (kind == NULL || strcmp(kind, "hid") == 0) {
-                continue;
-            }
-            if (plug_in_item(item)) {
-                log_append("ctm glue: bridged '%s' vid=%s pid=%s (%s)",
-                           item->name, item->vid, item->pid, kind);
-                count++;
-            }
-        }
+        int count = ctm_bridge_plug_all();
         log_append("ctm glue: auto-plugged %d controller(s)", count);
     } else {
         log_append("ctm glue: auto-plug off, use the overlay panel to plug a controller");
@@ -78,8 +81,7 @@ int ctm_bridge_list(ctm_bridge_dev_t *out, int max)
     if (out == NULL || max <= 0) {
         return 0;
     }
-    enumerate_devices(&g_scan);
-    build_logical_devices(&g_scan, &g_devices);
+    ctm_glue_enumerate();
     int n = 0;
     for (int i = 0; i < g_devices.count && n < max; ++i) {
         logical_device_t *item = &g_devices.items[i];
@@ -122,6 +124,79 @@ void ctm_bridge_unplug_index(int index)
     }
     stop_session(g_devices.items[index].key);
     log_append("ctm glue: manual unplug '%s'", g_devices.items[index].name);
+}
+
+int ctm_bridge_plug_all(void)
+{
+    ctm_glue_enumerate();
+    int count = 0;
+    for (int i = 0; i < g_devices.count; ++i) {
+        logical_device_t *item = &g_devices.items[i];
+        const char *kind = bridge_kind_for_item(item);
+        if (kind == NULL || strcmp(kind, "hid") == 0) {
+            continue;   /* skip generic HID / non-controllers */
+        }
+        if (session_index_for_key(item->key) >= 0) {
+            continue;   /* already plugged */
+        }
+        if (plug_in_item(item)) {
+            count++;
+            log_append("ctm glue: plugged '%s' (%s)", item->name, kind);
+        }
+    }
+    if (count > 0) {
+        publish_bt_macs();
+    }
+    return count;
+}
+
+void ctm_bridge_unplug_all(void)
+{
+    release_local_sessions_on_exit();
+    log_append("ctm glue: unplugged all");
+}
+
+bool ctm_bridge_get_settings(int index, ctm_bridge_settings_t *out)
+{
+    if (out == NULL || index < 0 || index >= g_devices.count) {
+        return false;
+    }
+    tv_bridge_worker_settings_t *s = settings_for_item(&g_devices.items[index]);
+    if (s == NULL) {
+        return false;
+    }
+    out->kind = (int) s->kind;
+    out->audio_mode = (int) s->audio_mode;
+    out->latency_ms = (int) s->latency_ms;
+    out->haptics_gain_centi = (int) s->haptics_gain_centi;
+    out->headset_volume_percent = (int) s->headset_volume_percent;
+    out->speaker_volume_percent = (int) s->speaker_volume_percent;
+    out->ds5_patch_high = (int) s->ds5_patch_high_nibble;
+    out->ds5_patch_low = (int) s->ds5_patch_low_nibble;
+    out->ds5_patch2_high = (int) s->ds5_patch2_high_nibble;
+    out->ds5_patch2_low = (int) s->ds5_patch2_low_nibble;
+    return true;
+}
+
+void ctm_bridge_set_settings(int index, const ctm_bridge_settings_t *in)
+{
+    if (in == NULL || index < 0 || index >= g_devices.count) {
+        return;
+    }
+    tv_bridge_worker_settings_t *s = settings_for_item(&g_devices.items[index]);
+    if (s == NULL) {
+        return;
+    }
+    s->audio_mode = (tv_bridge_audio_mode_t) in->audio_mode;
+    s->latency_ms = (unsigned int) in->latency_ms;
+    s->haptics_gain_centi = (unsigned int) in->haptics_gain_centi;
+    s->headset_volume_percent = (unsigned int) in->headset_volume_percent;
+    s->speaker_volume_percent = (unsigned int) in->speaker_volume_percent;
+    s->ds5_patch_high_nibble = (unsigned int) in->ds5_patch_high;
+    s->ds5_patch_low_nibble = (unsigned int) in->ds5_patch_low;
+    s->ds5_patch2_high_nibble = (unsigned int) in->ds5_patch2_high;
+    s->ds5_patch2_low_nibble = (unsigned int) in->ds5_patch2_low;
+    apply_settings_to_session(&g_devices.items[index]);
 }
 
 void ctm_bridge_stop(void)
