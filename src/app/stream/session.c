@@ -139,8 +139,9 @@ bool session_start_input(session_t *session) {
 #endif
     session_input_started(&session->input);
     if (session->config.ctm_bridge) {
-        // Release moonlight's grip first so the bridge's EVIOCGRAB is uncontested.
-        app_input_close_all_gamepads(&session->app->input);
+        // Keep Moonlight's controllers open (UI nav still works); host sends are
+        // gated and the controller-arrival is suppressed, so nothing reaches the
+        // host. The bridge forwards the plugged controller to the game itself.
         ctm_bridge_start();
     }
     return true;
@@ -150,8 +151,6 @@ void session_stop_input(session_t *session) {
     session_input_stopped(&session->input);
     if (session->config.ctm_bridge) {
         ctm_bridge_stop();
-        // Bridge released the controllers; moonlight re-acquires for menu nav.
-        app_input_open_all_gamepads(&session->app->input);
     }
 }
 

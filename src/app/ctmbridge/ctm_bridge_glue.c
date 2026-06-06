@@ -13,27 +13,9 @@
 #include "ctm_state.h"   /* core API + shared globals (g_running, g_scan, ...) */
 
 static bool s_active = false;
-static pthread_t s_refresh_thread;
-static bool s_refresh_started = false;
-
-/* Mirror ui_app.c's 2 s refresh_devices(): re-enumerate and re-publish the BT MAC
- * list so a controller that appeared (or whose MAC populated) slightly after
- * stream start still gets kept out of sniff mode by the stopSniff worker. Only
- * this thread touches g_scan/g_devices after start; g_bt_macs is mutex-guarded. */
-static void *ctm_refresh_worker(void *arg)
-{
-    (void) arg;
-    while (g_running) {
-        usleep(2000000);   /* 2 s, matching the standalone app's refresh timer */
-        if (!g_running) {
-            break;
-        }
-        enumerate_devices(&g_scan);
-        build_logical_devices(&g_scan, &g_devices);
-        publish_bt_macs();
-    }
-    return NULL;
-}
+/* Auto-plug is OFF for now: during testing the user picks a controller from the
+ * overlay panel. The code is kept so we can flip this on to auto-plug ALL later. */
+static bool s_autoplug = false;
 
 bool ctm_bridge_start(void)
 {
@@ -52,13 +34,6 @@ bool ctm_bridge_start(void)
         }
     }
 
-    /* Re-publish BT MACs every 2 s (mirrors the standalone app's refresh timer). */
-    if (!s_refresh_started) {
-        if (pthread_create(&s_refresh_thread, NULL, ctm_refresh_worker, NULL) == 0) {
-            s_refresh_started = true;
-        }
-    }
-
     /* Locate the Windows agent, enumerate controllers, bridge the first one we
      * recognise. Minimal: a single controller; multi-controller and hotplug
      * (via ctm_monitor) are later refinements. */
@@ -71,31 +46,82 @@ bool ctm_bridge_start(void)
     // out of sniff mode (the worker reads this list every 500 ms).
     publish_bt_macs();
 
-    bool bridged = false;
-    for (int i = 0; i < g_devices.count; ++i) {
-        logical_device_t *item = &g_devices.items[i];
-        const char *kind = bridge_kind_for_item(item);
-        /* bridge_kind_for_item() NEVER returns NULL: it returns "hid" for anything
-         * unrecognised (the TV remote, a keyboard, the wrong composite node, ...).
-         * Auto-bridge ONLY a known game controller, or we grab the first random HID
-         * -> wrong inputs and the wrong polling rate. In the standalone app the user
-         * picks the device; here we must select it. */
-        if (kind == NULL || strcmp(kind, "hid") == 0) {
-            continue;
+    /* Auto-plug only when enabled; it bridges EVERY recognised controller (no
+     * break = "autoplug all"). Off by default for now -> manual plug via panel. */
+    if (s_autoplug) {
+        int count = 0;
+        for (int i = 0; i < g_devices.count; ++i) {
+            logical_device_t *item = &g_devices.items[i];
+            const char *kind = bridge_kind_for_item(item);
+            /* bridge_kind_for_item() returns "hid" (never NULL) for unrecognised
+             * devices; only auto-bridge real game controllers. */
+            if (kind == NULL || strcmp(kind, "hid") == 0) {
+                continue;
+            }
+            if (plug_in_item(item)) {
+                log_append("ctm glue: bridged '%s' vid=%s pid=%s (%s)",
+                           item->name, item->vid, item->pid, kind);
+                count++;
+            }
         }
-        if (plug_in_item(item)) {
-            log_append("ctm glue: bridged '%s' vid=%s pid=%s (%s)",
-                       item->name, item->vid, item->pid, kind);
-            bridged = true;
-            break;
-        }
-    }
-    if (!bridged) {
-        log_append("ctm glue: no controller bridged");
+        log_append("ctm glue: auto-plugged %d controller(s)", count);
+    } else {
+        log_append("ctm glue: auto-plug off, use the overlay panel to plug a controller");
     }
 
     s_active = true;
-    return bridged;
+    return true;
+}
+
+int ctm_bridge_list(ctm_bridge_dev_t *out, int max)
+{
+    if (out == NULL || max <= 0) {
+        return 0;
+    }
+    enumerate_devices(&g_scan);
+    build_logical_devices(&g_scan, &g_devices);
+    int n = 0;
+    for (int i = 0; i < g_devices.count && n < max; ++i) {
+        logical_device_t *item = &g_devices.items[i];
+        /* Skip phantom / unconnected entries the enumerate surfaces (no VID:PID).
+         * (Pre-existing in the shared enumerate; we just don't show the junk.) */
+        if (item->vid[0] == '\0' || item->pid[0] == '\0') {
+            continue;
+        }
+        const char *kind = bridge_kind_for_item(item);
+        out[n].index = i;   /* g_devices index, stable for plug/unplug this call */
+        snprintf(out[n].name, sizeof(out[n].name), "%s", item->name);
+        snprintf(out[n].vid, sizeof(out[n].vid), "%s", item->vid);
+        snprintf(out[n].pid, sizeof(out[n].pid), "%s", item->pid);
+        snprintf(out[n].kind, sizeof(out[n].kind), "%s", kind ? kind : "hid");
+        out[n].plugged = (session_index_for_key(item->key) >= 0);
+        n++;
+    }
+    return n;
+}
+
+bool ctm_bridge_plug_index(int index)
+{
+    if (index < 0 || index >= g_devices.count) {
+        return false;
+    }
+    logical_device_t *item = &g_devices.items[index];
+    bool ok = plug_in_item(item);
+    if (ok) {
+        publish_bt_macs();   /* keep the newly-plugged BT controller out of sniff mode */
+    }
+    log_append("ctm glue: manual plug '%s' (%s) -> %s", item->name,
+               bridge_kind_for_item(item), ok ? "ok" : "failed");
+    return ok;
+}
+
+void ctm_bridge_unplug_index(int index)
+{
+    if (index < 0 || index >= g_devices.count) {
+        return;
+    }
+    stop_session(g_devices.items[index].key);
+    log_append("ctm glue: manual unplug '%s'", g_devices.items[index].name);
 }
 
 void ctm_bridge_stop(void)
@@ -105,10 +131,6 @@ void ctm_bridge_stop(void)
     }
     release_local_sessions_on_exit();
     g_running = false;
-    if (s_refresh_started) {
-        pthread_join(s_refresh_thread, NULL);
-        s_refresh_started = false;
-    }
     if (g_stop_sniff_thread_started) {
         pthread_join(g_stop_sniff_thread, NULL);
         g_stop_sniff_thread_started = false;

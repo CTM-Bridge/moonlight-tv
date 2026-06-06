@@ -55,6 +55,11 @@ void session_input_interrupt(stream_input_t *input) {
 
 void session_input_started(stream_input_t *input) {
     input->started = true;
+    if (input->view_only) {
+        // CTM bridge / view-only: don't announce controllers to the host (this is
+        // what created the phantom ViGEmBus pad). Moonlight still reads them locally.
+        return;
+    }
     for (int i = 0, j = app_input_get_max_gamepads(input->input); i < j; ++i) {
         app_gamepad_state_t *gamepad = app_input_gamepad_state_by_index(input->input, i);
         if (gamepad == NULL) {

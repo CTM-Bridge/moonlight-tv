@@ -29,6 +29,25 @@ bool ctm_bridge_active(void);
  * into out (NUL-terminated). For the on-stream CTM overlay panel. */
 void ctm_bridge_status(char *out, size_t out_len);
 
+/* One detected device, for the overlay's manual plug list. */
+typedef struct {
+    int index;      /* opaque device index; pass to ctm_bridge_plug/unplug_index */
+    char name[128];
+    char vid[8];
+    char pid[8];
+    char kind[8];   /* "ds5" / "ds4" / "xbox" / "puck" / "hid" */
+    bool plugged;
+} ctm_bridge_dev_t;
+
+/* Re-enumerate and fill out[0..max-1] with the detected devices; returns the
+ * count. Index i is stable for ctm_bridge_plug_index(i)/unplug_index(i) until the
+ * next ctm_bridge_list() call. */
+int ctm_bridge_list(ctm_bridge_dev_t *out, int max);
+
+/* Manually plug / unplug the device at the given list index. */
+bool ctm_bridge_plug_index(int index);
+void ctm_bridge_unplug_index(int index);
+
 #ifdef __cplusplus
 }
 #endif

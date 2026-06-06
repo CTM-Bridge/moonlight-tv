@@ -44,6 +44,12 @@ static void pin_toggle(lv_event_t *e);
 
 static void open_ctm_panel(lv_event_t *e);
 
+static void ctm_panel_populate(lv_obj_t *list);
+
+static void ctm_panel_dev_cb(lv_event_t *e);
+
+static void ctm_panel_resize_cb(lv_event_t *e);
+
 const lv_fragment_class_t streaming_controller_class = {
         .constructor_cb = constructor,
         .destructor_cb = controller_dtor,
@@ -285,14 +291,76 @@ static void toggle_vmouse(lv_event_t *event) {
     session_toggle_vmouse(app->session);
 }
 
+static void ctm_panel_populate(lv_obj_t *list) {
+    lv_obj_clean(list);
+    ctm_bridge_dev_t devs[16];
+    int n = ctm_bridge_list(devs, 16);
+    if (n == 0) {
+        lv_list_add_text(list, locstr("No controllers detected"));
+        return;
+    }
+    for (int i = 0; i < n; ++i) {
+        char txt[224];
+        snprintf(txt, sizeof(txt), "%s  [%s:%s]  %s%s",
+                 devs[i].name, devs[i].vid, devs[i].pid, devs[i].kind,
+                 devs[i].plugged ? "   (PLUGGED)" : "");
+        lv_obj_t *btn = lv_list_add_btn(list, NULL, txt);
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_set_style_radius(btn, LV_DPX(8), 0);
+        lv_obj_set_style_pad_all(btn, LV_DPX(14), 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(btn, devs[i].plugged
+                                  ? lv_palette_main(LV_PALETTE_GREEN)
+                                  : lv_palette_darken(LV_PALETTE_BLUE_GREY, 3), 0);
+        lv_obj_set_style_bg_color(btn, lv_palette_darken(LV_PALETTE_BLUE, 2), LV_STATE_FOCUS_KEY);
+        lv_obj_add_event_cb(btn, ctm_panel_dev_cb, LV_EVENT_CLICKED, (void *) (intptr_t) devs[i].index);
+    }
+}
+
+static void ctm_panel_dev_cb(lv_event_t *e) {
+    lv_obj_t *btn = lv_event_get_target(e);
+    lv_obj_t *list = lv_obj_get_parent(btn);
+    int gindex = (int) (intptr_t) lv_event_get_user_data(e);
+    ctm_bridge_dev_t devs[16];
+    int n = ctm_bridge_list(devs, 16);
+    for (int i = 0; i < n; ++i) {
+        if (devs[i].index == gindex) {
+            if (devs[i].plugged) {
+                ctm_bridge_unplug_index(gindex);
+            } else {
+                ctm_bridge_plug_index(gindex);
+            }
+            break;
+        }
+    }
+    ctm_panel_populate(list);
+}
+
+// Give the msgbox content a real height (the list is 100% of it). Without this the
+// content sizes to its children and the list collapses to nothing. Mirrors
+// help.dialog.c's resize handler.
+static void ctm_panel_resize_cb(lv_event_t *e) {
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    lv_obj_t *title = lv_msgbox_get_title(msgbox);
+    lv_obj_t *close_btn = lv_msgbox_get_close_btn(msgbox);
+    lv_coord_t title_height = LV_MAX(lv_obj_get_height(title), lv_obj_get_height(close_btn));
+    lv_obj_t *content = lv_msgbox_get_content(msgbox);
+    lv_coord_t height = lv_obj_get_content_height(msgbox);
+    lv_obj_set_height(content, height - title_height);
+}
+
 static void open_ctm_panel(lv_event_t *event) {
     LV_UNUSED(event);
     // Modal msgbox with a built-in close button; the moonlight theme manages the
-    // modal input group. DS4/DS5 setting controls slot into the content later.
-    char status[512];
-    ctm_bridge_status(status, sizeof(status));
-    lv_obj_t *msgbox = lv_msgbox_create(NULL, locstr("CTM Bridge"), status, NULL, true);
-    lv_obj_set_width(msgbox, LV_PCT(70));
+    // modal input group. Lists detected controllers; tap one to plug/unplug it.
+    lv_obj_t *msgbox = lv_msgbox_create(NULL, locstr("CTM Bridge"), NULL, NULL, true);
+    lv_obj_add_event_cb(msgbox, ctm_panel_resize_cb, LV_EVENT_SIZE_CHANGED, NULL);
+    lv_obj_set_size(msgbox, LV_PCT(80), LV_PCT(80));
+    lv_obj_t *content = lv_msgbox_get_content(msgbox);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_t *list = lv_list_create(content);
+    lv_obj_set_size(list, LV_PCT(100), LV_PCT(100));
+    ctm_panel_populate(list);
     lv_obj_center(msgbox);
 }
 
