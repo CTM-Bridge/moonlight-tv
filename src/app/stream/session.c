@@ -17,6 +17,7 @@
 #include "app_session.h"
 #include "session_worker.h"
 #include "stream/input/session_virt_mouse.h"
+#include "ctm_bridge_glue.h"
 
 // Expected luminance values in SEI are in units of 0.0001 cd/m2
 #define LUMINANCE_SCALE 10000
@@ -137,11 +138,21 @@ bool session_start_input(session_t *session) {
     }
 #endif
     session_input_started(&session->input);
+    if (session->config.ctm_bridge) {
+        // Release moonlight's grip first so the bridge's EVIOCGRAB is uncontested.
+        app_input_close_all_gamepads(&session->app->input);
+        ctm_bridge_start();
+    }
     return true;
 }
 
 void session_stop_input(session_t *session) {
     session_input_stopped(&session->input);
+    if (session->config.ctm_bridge) {
+        ctm_bridge_stop();
+        // Bridge released the controllers; moonlight re-acquires for menu nav.
+        app_input_open_all_gamepads(&session->app->input);
+    }
 }
 
 bool session_has_input(session_t *session) {
@@ -250,7 +261,8 @@ void session_config_init(app_t *app, session_config_t *config, const SERVER_DATA
     config->vmouse = app_config->virtual_mouse;
     config->hardware_mouse = app_config->hardware_mouse;
     config->local_audio = app_config->localaudio;
-    config->view_only = app_config->viewonly;
+    config->view_only = app_config->viewonly || app_config->ctm_bridge;
+    config->ctm_bridge = app_config->ctm_bridge;
     config->sops = app_config->sops;
     if (app_config->stick_deadzone < 0) {
         config->stick_deadzone = 0;

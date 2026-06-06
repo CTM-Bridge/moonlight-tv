@@ -10,6 +10,8 @@
 #include "util/i18n.h"
 #include "logging.h"
 
+#include "ctm_bridge_glue.h"
+
 static void exit_streaming(lv_event_t *event);
 
 static void suspend_streaming(lv_event_t *event);
@@ -39,6 +41,8 @@ static void overlay_key_cb(lv_event_t *e);
 static void update_buttons_layout(streaming_controller_t *controller);
 
 static void pin_toggle(lv_event_t *e);
+
+static void open_ctm_panel(lv_event_t *e);
 
 const lv_fragment_class_t streaming_controller_class = {
         .constructor_cb = constructor,
@@ -201,6 +205,7 @@ static void on_view_created(lv_fragment_t *self, lv_obj_t *view) {
     lv_obj_add_event_cb(controller->suspend_btn, suspend_streaming, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->kbd_btn, open_keyboard, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->vmouse_btn, toggle_vmouse, LV_EVENT_CLICKED, self);
+    lv_obj_add_event_cb(controller->ctm_btn, open_ctm_panel, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->base.obj, hide_overlay, LV_EVENT_CLICKED, self);
     lv_obj_add_event_cb(controller->overlay, overlay_key_cb, LV_EVENT_KEY, controller);
     lv_obj_add_event_cb(controller->base.obj, hide_overlay, LV_EVENT_CANCEL, controller);
@@ -278,6 +283,17 @@ static void toggle_vmouse(lv_event_t *event) {
     hide_overlay(event);
     app_t *app = controller->global;
     session_toggle_vmouse(app->session);
+}
+
+static void open_ctm_panel(lv_event_t *event) {
+    LV_UNUSED(event);
+    // Modal msgbox with a built-in close button; the moonlight theme manages the
+    // modal input group. DS4/DS5 setting controls slot into the content later.
+    char status[512];
+    ctm_bridge_status(status, sizeof(status));
+    lv_obj_t *msgbox = lv_msgbox_create(NULL, locstr("CTM Bridge"), status, NULL, true);
+    lv_obj_set_width(msgbox, LV_PCT(70));
+    lv_obj_center(msgbox);
 }
 
 bool show_overlay(streaming_controller_t *controller) {

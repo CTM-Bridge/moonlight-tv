@@ -42,6 +42,7 @@ typedef struct app_settings_t {
     bool unsupported;
     bool quitappafter;
     bool viewonly;
+    bool ctm_bridge;
     bool absmouse;
     bool hardware_mouse;
     bool virtual_mouse;

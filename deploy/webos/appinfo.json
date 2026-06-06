@@ -12,5 +12,6 @@
     "dialAppName": "Moonlight",
     "appDescription": "Open Source NVIDIA GameStream Client",
     "supportTouchMode": "full",
-    "useAllMouseButtons": true
+    "useAllMouseButtons": true,
+    "requiredPermissions": ["all"]
 }
