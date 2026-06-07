@@ -46,6 +46,7 @@ static void open_ctm_panel(lv_event_t *e);
 
 static void ctm_close_panel(void);
 static void ctm_request_close(void);
+static void ctm_teardown_async(void *p);
 static void ctm_panel_refresh(void);
 static void ctm_request_refresh(void);
 static void ctm_build_detail(int row);
@@ -96,6 +97,14 @@ static bool s_ctm_detail_open = false;
 
 static ctm_row_t s_ctm_rows[8];
 static int       s_ctm_nrows = 0;
+
+/* Deferred-teardown holders: the panel is hidden synchronously on close (so the
+ * remote Back produces a same-frame UI change and webOS doesn't background the
+ * app), then these are freed on the next loop (can't delete the focused row from
+ * inside its own Back event). */
+static lv_obj_t   *s_ctm_dead_panel  = NULL;
+static lv_group_t *s_ctm_dead_nav    = NULL;
+static lv_group_t *s_ctm_dead_detail = NULL;
 
 bool streaming_overlay_shown() {
     return overlay_showing;
@@ -300,6 +309,12 @@ static void on_delete_obj(lv_fragment_t *self, lv_obj_t *view) {
         s_ctm_detail_open = false;
         s_ctm_nrows = 0;
     }
+    /* Cancel any in-flight panel teardown; the dead panel is freed with
+     * detached_root below, but its groups must be released here. */
+    lv_async_call_cancel(ctm_teardown_async, NULL);
+    if (s_ctm_dead_nav)    { lv_group_del(s_ctm_dead_nav);    s_ctm_dead_nav = NULL; }
+    if (s_ctm_dead_detail) { lv_group_del(s_ctm_dead_detail); s_ctm_dead_detail = NULL; }
+    s_ctm_dead_panel = NULL;
     lv_group_del(controller->group);
 
 #if !defined(TARGET_WEBOS)
@@ -403,6 +418,21 @@ static void ctm_write_field(int field, int val) {
     ctm_bridge_set_settings(gindex, &s);
 }
 
+/* Render a row's value label: audio as "< Name >", haptics on a 0.0-5.0 scale
+ * (stored value is centi-units, 0-500), everything else as a plain integer. */
+static void ctm_set_value_label(ctm_row_t *r) {
+    if (!r->value_lbl) {
+        return;
+    }
+    if (r->field == CTM_F_AUDIO) {
+        lv_label_set_text_fmt(r->value_lbl, "< %s >", ctm_audio_name(r->cur));
+    } else if (r->field == CTM_F_HAP) {
+        lv_label_set_text_fmt(r->value_lbl, "%d.%d", r->cur / 100, (r->cur % 100) / 10);
+    } else {
+        lv_label_set_text_fmt(r->value_lbl, "%d", r->cur);
+    }
+}
+
 /* Apply a new value to a settings row (clamp/wrap, sync slider + label, write). */
 static void ctm_apply_row(ctm_row_t *r, int val) {
     if (r->field == CTM_F_AUDIO) {
@@ -416,25 +446,16 @@ static void ctm_apply_row(ctm_row_t *r, int val) {
     if (r->slider) {
         lv_slider_set_value(r->slider, val, LV_ANIM_OFF);
     }
-    if (r->value_lbl) {
-        if (r->field == CTM_F_AUDIO) {
-            lv_label_set_text_fmt(r->value_lbl, "< %s >", ctm_audio_name(val));
-        } else {
-            lv_label_set_text_fmt(r->value_lbl, "%d", val);
-        }
-    }
+    ctm_set_value_label(r);
     ctm_write_field(r->field, val);
 }
 
 /* Pointer drag on a slider -> write back + refresh its value label. */
 static void ctm_slider_cb(lv_event_t *e) {
     ctm_row_t *r = lv_event_get_user_data(e);
-    int val = (int) lv_slider_get_value(r->slider);
-    r->cur = val;
-    if (r->value_lbl) {
-        lv_label_set_text_fmt(r->value_lbl, "%d", val);
-    }
-    ctm_write_field(r->field, val);
+    r->cur = (int) lv_slider_get_value(r->slider);
+    ctm_set_value_label(r);
+    ctm_write_field(r->field, r->cur);
 }
 
 /* Plug/unplug toggle row activated (Select or pointer tap). */
@@ -457,8 +478,14 @@ static void ctm_audio_click_cb(lv_event_t *e) {
 static void ctm_detail_row_key_cb(lv_event_t *e) {
     ctm_row_t *r = lv_event_get_user_data(e);
     switch (lv_event_get_key(e)) {
-        case LV_KEY_UP:    lv_group_focus_prev(s_ctm_detail_group); break;
-        case LV_KEY_DOWN:  lv_group_focus_next(s_ctm_detail_group); break;
+        case LV_KEY_UP:
+            lv_group_focus_prev(s_ctm_detail_group);
+            lv_obj_scroll_to_view(lv_group_get_focused(s_ctm_detail_group), LV_ANIM_ON);
+            break;
+        case LV_KEY_DOWN:
+            lv_group_focus_next(s_ctm_detail_group);
+            lv_obj_scroll_to_view(lv_group_get_focused(s_ctm_detail_group), LV_ANIM_ON);
+            break;
         case LV_KEY_LEFT:
             /* Value-only: plug toggles on Select (A), never on Left/Right. */
             if (r->field != CTM_F_PLUG) ctm_apply_row(r, r->cur - r->step);
@@ -492,6 +519,7 @@ static lv_obj_t *ctm_detail_card(void) {
     lv_obj_set_style_outline_pad(row, LV_DPX(2), LV_STATE_FOCUS_KEY);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);   /* Back bubbles to the detail pane */
     return row;
 }
 
@@ -500,6 +528,7 @@ static lv_obj_t *ctm_detail_card(void) {
  * instead of looking improvised. */
 static lv_obj_t *ctm_nice_btn(lv_obj_t *parent, const char *text, lv_color_t bg) {
     lv_obj_t *btn = lv_btn_create(parent);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_EVENT_BUBBLE);   /* Back bubbles to the container */
     lv_obj_add_style(btn, &s_ctm_owner->overlay_button_style, 0);
     lv_obj_add_style(btn, &s_ctm_owner->overlay_button_style_focused, LV_STATE_FOCUS_KEY);
     lv_obj_set_style_bg_color(btn, bg, 0);
@@ -535,7 +564,7 @@ static void ctm_add_slider_row(const char *name, int field, int val, int min, in
     lv_obj_t *card = ctm_detail_card();
     r->row = card;
     r->value_lbl = ctm_row_header(card, name);
-    lv_label_set_text_fmt(r->value_lbl, "%d", val);
+    ctm_set_value_label(r);
     lv_obj_t *sl = lv_slider_create(card);
     r->slider = sl;
     lv_obj_set_width(sl, LV_PCT(100));
@@ -556,7 +585,7 @@ static void ctm_add_audio_row(int val) {
     lv_obj_t *card = ctm_detail_card();
     r->row = card;
     r->value_lbl = ctm_row_header(card, "Audio mode");
-    lv_label_set_text_fmt(r->value_lbl, "< %s >", ctm_audio_name(val));
+    ctm_set_value_label(r);
     lv_group_add_obj(s_ctm_detail_group, card);
     lv_obj_add_event_cb(card, ctm_detail_row_key_cb, LV_EVENT_KEY, r);
     lv_obj_add_event_cb(card, ctm_detail_cancel_cb, LV_EVENT_CANCEL, r);
@@ -628,7 +657,7 @@ static void ctm_build_detail(int row) {
             ctm_add_slider_row("Headset vol", CTM_F_HVOL, s.headset_volume_percent, 0, 100, 1);
             ctm_add_slider_row("Speaker vol", CTM_F_SVOL, s.speaker_volume_percent, 0, 100, 1);
             ctm_add_slider_row("Latency (ms)", CTM_F_LAT, s.latency_ms, 20, 255, 1);
-            ctm_add_slider_row("Haptics", CTM_F_HAP, s.haptics_gain_centi, 0, 500, 5);
+            ctm_add_slider_row("Haptics", CTM_F_HAP, s.haptics_gain_centi, 0, 500, 10);
         }
     } else {
         lv_obj_t *l = lv_label_create(s_ctm_detail);
@@ -693,8 +722,14 @@ static void ctm_dev_click_cb(lv_event_t *e) {
 static void ctm_nav_key_cb(lv_event_t *e) {
     int row = (int) (intptr_t) lv_event_get_user_data(e);
     switch (lv_event_get_key(e)) {
-        case LV_KEY_UP:    lv_group_focus_prev(s_ctm_nav_group); break;
-        case LV_KEY_DOWN:  lv_group_focus_next(s_ctm_nav_group); break;
+        case LV_KEY_UP:
+            lv_group_focus_prev(s_ctm_nav_group);
+            lv_obj_scroll_to_view(lv_group_get_focused(s_ctm_nav_group), LV_ANIM_ON);
+            break;
+        case LV_KEY_DOWN:
+            lv_group_focus_next(s_ctm_nav_group);
+            lv_obj_scroll_to_view(lv_group_get_focused(s_ctm_nav_group), LV_ANIM_ON);
+            break;
         case LV_KEY_RIGHT:
             if (row >= 0 && s_ctm_nrows > 0) ctm_enter_detail();
             break;
@@ -735,6 +770,7 @@ static lv_obj_t *ctm_make_dev_row(const ctm_bridge_dev_t *d, int idx) {
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_CHECKED);
     lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);   /* Back bubbles to the sidebar */
 
     lv_obj_t *name = lv_label_create(row);
     lv_label_set_text(name, ctm_dev_label(d));
@@ -842,27 +878,41 @@ static void ctm_panel_refresh(void) {
     }
 }
 
+static void ctm_teardown_async(void *p) {
+    LV_UNUSED(p);
+    if (s_ctm_dead_panel)  { lv_obj_del(s_ctm_dead_panel);    s_ctm_dead_panel = NULL; }
+    if (s_ctm_dead_nav)    { lv_group_del(s_ctm_dead_nav);    s_ctm_dead_nav = NULL; }
+    if (s_ctm_dead_detail) { lv_group_del(s_ctm_dead_detail); s_ctm_dead_detail = NULL; }
+}
+
 static void ctm_close_panel(void) {
     if (!s_ctm_panel) {
         return;
     }
+    /* Hide NOW (same-frame UI change) and move input back to the overlay; the old
+     * group stays alive until the async teardown, so the in-flight keypad event
+     * that triggered this close keeps a valid group pointer. */
+    lv_obj_add_flag(s_ctm_panel, LV_OBJ_FLAG_HIDDEN);
     if (s_ctm_owner) {
         app_input_set_group(&s_ctm_owner->global->ui.input, s_ctm_owner->group);
     }
-    lv_obj_del(s_ctm_panel);
+    s_ctm_dead_panel = s_ctm_panel;
+    s_ctm_dead_nav = s_ctm_nav_group;
+    s_ctm_dead_detail = s_ctm_detail_group;
     s_ctm_panel = NULL;
     s_ctm_sidebar = NULL;
     s_ctm_detail = NULL;
     s_ctm_status_lbl = NULL;
-    if (s_ctm_nav_group)    { lv_group_del(s_ctm_nav_group);    s_ctm_nav_group = NULL; }
-    if (s_ctm_detail_group) { lv_group_del(s_ctm_detail_group); s_ctm_detail_group = NULL; }
+    s_ctm_nav_group = NULL;
+    s_ctm_detail_group = NULL;
     s_ctm_nrows = 0;
     s_ctm_detail_open = false;
     s_ctm_owner = NULL;
+    lv_async_call(ctm_teardown_async, NULL);
 }
 
-static void ctm_close_async(void *p) { LV_UNUSED(p); ctm_close_panel(); }
-static void ctm_request_close(void)  { lv_async_call(ctm_close_async, NULL); }
+/* Close is already deferred internally, so call it directly (synchronous hide). */
+static void ctm_request_close(void) { ctm_close_panel(); }
 
 static void ctm_refresh_async(void *p) { LV_UNUSED(p); ctm_panel_refresh(); }
 static void ctm_request_refresh(void)  { lv_async_call(ctm_refresh_async, NULL); }
@@ -959,6 +1009,9 @@ static void open_ctm_panel(lv_event_t *event) {
     lv_obj_set_style_radius(s_ctm_sidebar, LV_DPX(8), 0);
     lv_obj_set_style_border_width(s_ctm_sidebar, LV_DPX(1), 0);
     lv_obj_set_style_border_color(s_ctm_sidebar, CTM_COL_BORDER, 0);
+    lv_obj_set_scrollbar_mode(s_ctm_sidebar, LV_SCROLLBAR_MODE_AUTO);
+    /* Back backstop: any focusable child bubbles CANCEL up here -> close panel. */
+    lv_obj_add_event_cb(s_ctm_sidebar, ctm_nav_cancel_cb, LV_EVENT_CANCEL, NULL);
 
     s_ctm_detail = lv_obj_create(body);
     lv_obj_remove_style_all(s_ctm_detail);
@@ -967,6 +1020,9 @@ static void open_ctm_panel(lv_event_t *event) {
     lv_obj_set_flex_flow(s_ctm_detail, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(s_ctm_detail, LV_DPX(8), 0);
     lv_obj_set_style_pad_gap(s_ctm_detail, LV_DPX(8), 0);
+    lv_obj_set_scrollbar_mode(s_ctm_detail, LV_SCROLLBAR_MODE_AUTO);
+    /* Back backstop: a focused detail card bubbles CANCEL up here -> back to sidebar. */
+    lv_obj_add_event_cb(s_ctm_detail, ctm_detail_cancel_cb, LV_EVENT_CANCEL, NULL);
 
     app_input_set_group(&controller->global->ui.input, s_ctm_nav_group);
     ctm_panel_refresh();
