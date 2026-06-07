@@ -36,8 +36,14 @@ typedef struct {
     char vid[8];
     char pid[8];
     char kind[8];   /* "ds5" / "ds4" / "xbox" / "puck" / "hid" */
+    char bus[8];    /* "USB" / "BT" */
+    char mac[24];   /* BT MAC (e.g. "58:10:31:..."), empty for USB */
     bool plugged;
 } ctm_bridge_dev_t;
+
+/* Write the discovered Windows agent host (or "offline") into out (NUL-terminated).
+ * For the overlay header. */
+void ctm_bridge_agent(char *out, size_t out_len);
 
 /* Re-enumerate and fill out[0..max-1] with the detected devices; returns the
  * count. Index i is stable for ctm_bridge_plug_index(i)/unplug_index(i) until the

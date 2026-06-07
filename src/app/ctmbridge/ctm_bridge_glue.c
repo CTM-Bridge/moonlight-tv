@@ -150,6 +150,8 @@ int ctm_bridge_list(ctm_bridge_dev_t *out, int max)
         snprintf(out[n].vid, sizeof(out[n].vid), "%s", item->vid);
         snprintf(out[n].pid, sizeof(out[n].pid), "%s", item->pid);
         snprintf(out[n].kind, sizeof(out[n].kind), "%s", kind ? kind : "hid");
+        snprintf(out[n].bus, sizeof(out[n].bus), "%s", item->bus);
+        snprintf(out[n].mac, sizeof(out[n].mac), "%s", item->mac);
         out[n].plugged = (session_index_for_key(item->key) >= 0);
         n++;
     }
@@ -293,4 +295,12 @@ void ctm_bridge_status(char *out, size_t out_len)
         n += (size_t) snprintf(out + n, out_len - n, "  - %s [%s]\n",
                                g_sessions[i].key, g_sessions[i].busid);
     }
+}
+
+void ctm_bridge_agent(char *out, size_t out_len)
+{
+    if (out == NULL || out_len == 0) {
+        return;
+    }
+    snprintf(out, out_len, "%s", (g_agent_online && g_agent_host[0]) ? g_agent_host : "offline");
 }
