@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "ctm_state.h"   /* core API + shared globals (g_running, g_scan, ...) */
+#include "ctm_monitor.h" /* hotplug: connect/disconnect watch thread */
 
 static bool s_active = false;
 /* Auto-plug ALL recognised controllers on stream start. The overlay panel can
@@ -35,6 +36,51 @@ static void ctm_glue_enumerate(void)
     if (!puck) {
         g_puck_enum.valid = 0;
     }
+}
+
+/* Serialises every g_devices/g_scan access so the hotplug monitor thread can't
+ * race the UI thread's panel calls. */
+static pthread_mutex_t s_dev_mutex = PTHREAD_MUTEX_INITIALIZER;
+static ctm_monitor_t *s_monitor = NULL;
+
+/* Plug every recognised, not-yet-plugged controller. Caller MUST hold s_dev_mutex. */
+static int glue_plug_all_locked(void)
+{
+    ctm_glue_enumerate();
+    int count = 0;
+    for (int i = 0; i < g_devices.count; ++i) {
+        logical_device_t *item = &g_devices.items[i];
+        const char *kind = bridge_kind_for_item(item);
+        if (kind == NULL || strcmp(kind, "hid") == 0) {
+            continue;   /* skip generic HID / non-controllers */
+        }
+        if (session_index_for_key(item->key) >= 0) {
+            continue;   /* already plugged */
+        }
+        if (plug_in_item(item)) {
+            count++;
+            log_append("ctm glue: plugged '%s' (%s)", item->name, kind);
+        }
+    }
+    if (count > 0) {
+        publish_bt_macs();
+    }
+    return count;
+}
+
+/* Hotplug callback (monitor thread): on any connect/disconnect, re-sync by
+ * plugging newly-present recognised controllers. Serialised with the panel via
+ * s_dev_mutex; disconnect cleanup is handled by the controller thread, which
+ * exits when its HID read fails. */
+static void glue_hotplug_cb(void *ud, const ctm_controller_dev_t *dev, int present)
+{
+    (void) ud; (void) dev; (void) present;
+    if (!s_active) {
+        return;
+    }
+    pthread_mutex_lock(&s_dev_mutex);
+    glue_plug_all_locked();
+    pthread_mutex_unlock(&s_dev_mutex);
 }
 
 bool ctm_bridge_start(void)
@@ -73,6 +119,13 @@ bool ctm_bridge_start(void)
     }
 
     s_active = true;
+
+    /* Watch for controllers connected/disconnected mid-stream and auto-plug them. */
+    if (s_monitor == NULL) {
+        s_monitor = ctm_monitor_start(glue_hotplug_cb, NULL);
+        log_append(s_monitor ? "ctm glue: hotplug monitor started"
+                             : "ctm glue: hotplug monitor failed to start");
+    }
     return true;
 }
 
@@ -81,6 +134,7 @@ int ctm_bridge_list(ctm_bridge_dev_t *out, int max)
     if (out == NULL || max <= 0) {
         return 0;
     }
+    pthread_mutex_lock(&s_dev_mutex);
     ctm_glue_enumerate();
     int n = 0;
     for (int i = 0; i < g_devices.count && n < max; ++i) {
@@ -99,110 +153,114 @@ int ctm_bridge_list(ctm_bridge_dev_t *out, int max)
         out[n].plugged = (session_index_for_key(item->key) >= 0);
         n++;
     }
+    pthread_mutex_unlock(&s_dev_mutex);
     return n;
 }
 
 bool ctm_bridge_plug_index(int index)
 {
-    if (index < 0 || index >= g_devices.count) {
-        return false;
+    pthread_mutex_lock(&s_dev_mutex);
+    bool ok = false;
+    if (index >= 0 && index < g_devices.count) {
+        logical_device_t *item = &g_devices.items[index];
+        ok = plug_in_item(item);
+        if (ok) {
+            publish_bt_macs();   /* keep the newly-plugged BT controller out of sniff mode */
+        }
+        log_append("ctm glue: manual plug '%s' (%s) -> %s", item->name,
+                   bridge_kind_for_item(item), ok ? "ok" : "failed");
     }
-    logical_device_t *item = &g_devices.items[index];
-    bool ok = plug_in_item(item);
-    if (ok) {
-        publish_bt_macs();   /* keep the newly-plugged BT controller out of sniff mode */
-    }
-    log_append("ctm glue: manual plug '%s' (%s) -> %s", item->name,
-               bridge_kind_for_item(item), ok ? "ok" : "failed");
+    pthread_mutex_unlock(&s_dev_mutex);
     return ok;
 }
 
 void ctm_bridge_unplug_index(int index)
 {
-    if (index < 0 || index >= g_devices.count) {
-        return;
+    pthread_mutex_lock(&s_dev_mutex);
+    if (index >= 0 && index < g_devices.count) {
+        stop_session(g_devices.items[index].key);
+        log_append("ctm glue: manual unplug '%s'", g_devices.items[index].name);
     }
-    stop_session(g_devices.items[index].key);
-    log_append("ctm glue: manual unplug '%s'", g_devices.items[index].name);
+    pthread_mutex_unlock(&s_dev_mutex);
 }
 
 int ctm_bridge_plug_all(void)
 {
-    ctm_glue_enumerate();
-    int count = 0;
-    for (int i = 0; i < g_devices.count; ++i) {
-        logical_device_t *item = &g_devices.items[i];
-        const char *kind = bridge_kind_for_item(item);
-        if (kind == NULL || strcmp(kind, "hid") == 0) {
-            continue;   /* skip generic HID / non-controllers */
-        }
-        if (session_index_for_key(item->key) >= 0) {
-            continue;   /* already plugged */
-        }
-        if (plug_in_item(item)) {
-            count++;
-            log_append("ctm glue: plugged '%s' (%s)", item->name, kind);
-        }
-    }
-    if (count > 0) {
-        publish_bt_macs();
-    }
+    pthread_mutex_lock(&s_dev_mutex);
+    int count = glue_plug_all_locked();
+    pthread_mutex_unlock(&s_dev_mutex);
     return count;
 }
 
 void ctm_bridge_unplug_all(void)
 {
+    pthread_mutex_lock(&s_dev_mutex);
     release_local_sessions_on_exit();
+    pthread_mutex_unlock(&s_dev_mutex);
     log_append("ctm glue: unplugged all");
 }
 
 bool ctm_bridge_get_settings(int index, ctm_bridge_settings_t *out)
 {
-    if (out == NULL || index < 0 || index >= g_devices.count) {
+    if (out == NULL) {
         return false;
     }
-    tv_bridge_worker_settings_t *s = settings_for_item(&g_devices.items[index]);
-    if (s == NULL) {
-        return false;
+    pthread_mutex_lock(&s_dev_mutex);
+    bool ok = false;
+    if (index >= 0 && index < g_devices.count) {
+        tv_bridge_worker_settings_t *s = settings_for_item(&g_devices.items[index]);
+        if (s != NULL) {
+            out->kind = (int) s->kind;
+            out->audio_mode = (int) s->audio_mode;
+            out->latency_ms = (int) s->latency_ms;
+            out->haptics_gain_centi = (int) s->haptics_gain_centi;
+            out->headset_volume_percent = (int) s->headset_volume_percent;
+            out->speaker_volume_percent = (int) s->speaker_volume_percent;
+            out->ds5_patch_high = (int) s->ds5_patch_high_nibble;
+            out->ds5_patch_low = (int) s->ds5_patch_low_nibble;
+            out->ds5_patch2_high = (int) s->ds5_patch2_high_nibble;
+            out->ds5_patch2_low = (int) s->ds5_patch2_low_nibble;
+            ok = true;
+        }
     }
-    out->kind = (int) s->kind;
-    out->audio_mode = (int) s->audio_mode;
-    out->latency_ms = (int) s->latency_ms;
-    out->haptics_gain_centi = (int) s->haptics_gain_centi;
-    out->headset_volume_percent = (int) s->headset_volume_percent;
-    out->speaker_volume_percent = (int) s->speaker_volume_percent;
-    out->ds5_patch_high = (int) s->ds5_patch_high_nibble;
-    out->ds5_patch_low = (int) s->ds5_patch_low_nibble;
-    out->ds5_patch2_high = (int) s->ds5_patch2_high_nibble;
-    out->ds5_patch2_low = (int) s->ds5_patch2_low_nibble;
-    return true;
+    pthread_mutex_unlock(&s_dev_mutex);
+    return ok;
 }
 
 void ctm_bridge_set_settings(int index, const ctm_bridge_settings_t *in)
 {
-    if (in == NULL || index < 0 || index >= g_devices.count) {
+    if (in == NULL) {
         return;
     }
-    tv_bridge_worker_settings_t *s = settings_for_item(&g_devices.items[index]);
-    if (s == NULL) {
-        return;
+    pthread_mutex_lock(&s_dev_mutex);
+    if (index >= 0 && index < g_devices.count) {
+        tv_bridge_worker_settings_t *s = settings_for_item(&g_devices.items[index]);
+        if (s != NULL) {
+            s->audio_mode = (tv_bridge_audio_mode_t) in->audio_mode;
+            s->latency_ms = (unsigned int) in->latency_ms;
+            s->haptics_gain_centi = (unsigned int) in->haptics_gain_centi;
+            s->headset_volume_percent = (unsigned int) in->headset_volume_percent;
+            s->speaker_volume_percent = (unsigned int) in->speaker_volume_percent;
+            s->ds5_patch_high_nibble = (unsigned int) in->ds5_patch_high;
+            s->ds5_patch_low_nibble = (unsigned int) in->ds5_patch_low;
+            s->ds5_patch2_high_nibble = (unsigned int) in->ds5_patch2_high;
+            s->ds5_patch2_low_nibble = (unsigned int) in->ds5_patch2_low;
+            apply_settings_to_session(&g_devices.items[index]);
+        }
     }
-    s->audio_mode = (tv_bridge_audio_mode_t) in->audio_mode;
-    s->latency_ms = (unsigned int) in->latency_ms;
-    s->haptics_gain_centi = (unsigned int) in->haptics_gain_centi;
-    s->headset_volume_percent = (unsigned int) in->headset_volume_percent;
-    s->speaker_volume_percent = (unsigned int) in->speaker_volume_percent;
-    s->ds5_patch_high_nibble = (unsigned int) in->ds5_patch_high;
-    s->ds5_patch_low_nibble = (unsigned int) in->ds5_patch_low;
-    s->ds5_patch2_high_nibble = (unsigned int) in->ds5_patch2_high;
-    s->ds5_patch2_low_nibble = (unsigned int) in->ds5_patch2_low;
-    apply_settings_to_session(&g_devices.items[index]);
+    pthread_mutex_unlock(&s_dev_mutex);
 }
 
 void ctm_bridge_stop(void)
 {
     if (!s_active) {
         return;
+    }
+    /* Stop hotplug first: joins the monitor thread (do this WITHOUT holding
+     * s_dev_mutex so an in-flight callback can finish) before tearing down. */
+    if (s_monitor) {
+        ctm_monitor_stop(s_monitor);
+        s_monitor = NULL;
     }
     release_local_sessions_on_exit();
     g_running = false;

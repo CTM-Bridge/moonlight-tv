@@ -439,8 +439,8 @@ static void open_ctm_settings(int index) {
 
     s_set_hvol = ctm_settings_slider(c, locstr("Headset volume %"), s.headset_volume_percent, 0, 100);
     s_set_svol = ctm_settings_slider(c, locstr("Speaker volume %"), s.speaker_volume_percent, 0, 100);
-    s_set_lat = ctm_settings_slider(c, locstr("Latency (ms)"), s.latency_ms, 0, 40);
-    s_set_hap = ctm_settings_slider(c, locstr("Haptics gain (x0.01)"), s.haptics_gain_centi, 0, 300);
+    s_set_lat = ctm_settings_slider(c, locstr("Latency (ms)"), s.latency_ms, 20, 255);
+    s_set_hap = ctm_settings_slider(c, locstr("Haptics gain (x0.01)"), s.haptics_gain_centi, 0, 500);
     lv_obj_center(mb);
 }
 

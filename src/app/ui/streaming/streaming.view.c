@@ -78,6 +78,18 @@ lv_obj_t *streaming_scene_create(lv_fragment_t *self, lv_obj_t *parent) {
     lv_obj_add_style(kbd_label, &controller->overlay_button_label_style, 0);
     lv_label_set_text(kbd_label, locstr("Soft keyboard"));
 
+    // CTM Bridge button: lives in the actions bar, immediately left of Virtual
+    // Mouse. Created here (not top-left) so its flex position and focus-group
+    // order both fall between Soft keyboard and Virtual Mouse.
+    lv_obj_t *ctm_btn = lv_btn_create(actions);
+    lv_obj_add_flag(ctm_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_style(ctm_btn, &controller->overlay_button_style, 0);
+    lv_obj_add_style(ctm_btn, &controller->overlay_button_style_focused, LV_STATE_FOCUS_KEY);
+    lv_obj_set_style_bg_color(ctm_btn, lv_palette_main(LV_PALETTE_PURPLE), 0);
+    lv_obj_t *ctm_label = lv_label_create(ctm_btn);
+    lv_obj_add_style(ctm_label, &controller->overlay_button_label_style, 0);
+    lv_label_set_text(ctm_label, locstr("CTM Bridge"));
+
     lv_obj_t *vmouse_btn = lv_btn_create(actions);
     lv_obj_add_flag(vmouse_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_style(vmouse_btn, &controller->overlay_button_style, 0);
@@ -133,17 +145,6 @@ lv_obj_t *streaming_scene_create(lv_fragment_t *self, lv_obj_t *parent) {
     controller->stats_items.host_latency = stat_label(stats, "Host processing latency");
     controller->stats_items.vdec_latency = stat_label(stats, "Decoder latency");
 
-
-    // Top-left overlay button that opens the CTM bridge panel.
-    lv_obj_t *ctm_btn = lv_btn_create(overlay);
-    lv_obj_add_flag(ctm_btn, LV_OBJ_FLAG_EVENT_BUBBLE);
-    lv_obj_add_style(ctm_btn, &controller->overlay_button_style, 0);
-    lv_obj_add_style(ctm_btn, &controller->overlay_button_style_focused, LV_STATE_FOCUS_KEY);
-    lv_obj_set_style_bg_color(ctm_btn, lv_palette_main(LV_PALETTE_PURPLE), 0);
-    lv_obj_align(ctm_btn, LV_ALIGN_TOP_LEFT, LV_DPX(20), LV_DPX(20));
-    lv_obj_t *ctm_label = lv_label_create(ctm_btn);
-    lv_obj_add_style(ctm_label, &controller->overlay_button_label_style, 0);
-    lv_label_set_text(ctm_label, locstr("CTM Bridge"));
 
     lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
 
