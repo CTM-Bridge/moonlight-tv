@@ -1,5 +1,11 @@
 # Moonlight TV
 
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ciprianteodormisaila)
+
+> This is a fork of [Moonlight TV](https://github.com/mariotaku/moonlight-tv) by mariotaku —
+> with **CTM Bridge** support built in: controllers (and the TV's Magic Remote as a
+> pointer/keyboard) paired to the TV appear on the gaming PC as native USB devices.
+
 Moonlight TV is a community version of [Moonlight GameStream Client](https://moonlight-stream.org/), made for large
 screens. It works on LG webOS powered TVs, and Raspberry Pi running Raspbian.
 
