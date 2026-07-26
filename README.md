@@ -1,6 +1,4 @@
-# Moonlight TV
-
-[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ciprianteodormisaila)
+# Moonlight TV (CTM Bridge)
 
 > This is a fork of [Moonlight TV](https://github.com/mariotaku/moonlight-tv) by mariotaku,
 > extended with my **[CTM Bridge](https://github.com/CTM-Bridge/CTM-USBIP)**:
@@ -8,42 +6,54 @@
 > show up on the gaming PC as native USB devices, with full input, rumble and
 > controller audio.
 
-Moonlight TV is a community version of [Moonlight GameStream Client](https://moonlight-stream.org/), made for large
-screens. It works on LG webOS powered TVs, and Raspberry Pi running Raspbian.
+Moonlight TV is a community version of [Moonlight GameStream Client](https://moonlight-stream.org/),
+made for large screens, running on LG webOS TVs.
 
-![Download Stats](https://img.shields.io/github/downloads/mariotaku/moonlight-tv/total)
+## What the CTM fork adds
 
-## Features
+* **Controllers over CTM Bridge** — DualShock 4 / DualSense / Xbox / Steam Puck
+  paired to the TV appear on the PC as native USB devices: input, rumble, LEDs
+  and controller audio (DS4/DS5 speaker + headset, with headphone-jack
+  auto-route).
+* **Magic Remote → PC mouse + keyboard** while streaming: pointer, click,
+  wheel, and D-pad/OK as arrow/enter keys — single input authority, no double
+  cursor.
+* **Mice & keyboards** connected to the TV (Bluetooth or USB dongle) bridge and
+  auto-plug the same way.
+* **On-stream CTM panel** — plug/unplug devices, per-controller audio modes and
+  volumes, live bridge status.
+* **Auto-reconnect** on network hiccups, with bridged controllers kept alive
+  through the retry.
 
-* High performance streaming for webOS
-* UI optimized for large screen and remote controller
-* Supports up to 4 controllers
-* Easy to port to other OSes (Now runs on macOS, Arch, Debian, Raspbian and Windows)
-
-## Screenshots
-
-![Launcher](https://user-images.githubusercontent.com/830358/141690137-529d3b94-b56a-4f24-a3c5-00a56eb30952.png)
-
-![Settings](https://user-images.githubusercontent.com/830358/147389849-6907f614-dbd4-4c24-987e-1a214a9680d0.png)
-
-![In-game Overlay](https://user-images.githubusercontent.com/830358/141690146-27ee2564-0cc8-43ef-a5b0-54b8487dda1e.png)
-_Screenshot performed on TV has lower picture quality. Actual picture quality is better._
+Requires the [CTM Bridge Windows service](https://github.com/CTM-Bridge/CTM-USBIP)
+on the gaming PC.
 
 ## Download
 
-### For webOS
+Grab `com.limelight.webos_<version>.ipk` from the
+[combined CTM Bridge release](https://github.com/CTM-Bridge/releases/releases/latest)
+and install with [dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop)
+or `ares-install`.
 
-[Easy installation with dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop) (recommended)
+## Building
 
-Or download IPK from [Latest release](https://github.com/mariotaku/moonlight-tv/releases/latest)
+Clone [ctm-bridge-webos](https://github.com/CTM-Bridge/ctm-bridge-webos) as a
+**sibling directory** of this repo — the embedded `ctmbridge` lib compiles the
+bridge core straight from it (`-DCTM_BRIDGE_DIR=<path>` overrides the
+location). Then build as usual for webOS.
 
-### For Raspbian
+## Upstream
 
-Download DEB from [Latest release](https://github.com/mariotaku/moonlight-tv/releases/latest)
+Everything else — general features, platform support, documentation — is
+upstream [mariotaku/moonlight-tv](https://github.com/mariotaku/moonlight-tv)
+([wiki](https://github.com/mariotaku/moonlight-tv/wiki)). Credits to
+[moonlight-embedded](https://github.com/irtimmer/moonlight-embedded) for the
+original libgamestream and decoder components.
 
-## [Documentations](https://github.com/mariotaku/moonlight-tv/wiki)
+## Support
 
-## Credits
+One person, late nights: controllers were just the start — native AMF
+streaming, a custom low-latency codec and a bigger webOS app are in the pipe.
+If CTM Bridge saved you some hassle, coffee speeds them up.
 
-* [moonlight-embedded](https://github.com/irtimmer/moonlight-embedded), for original libgamestream and decoder
-  components
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ciprianteodormisaila)
