@@ -22,7 +22,9 @@ made for large screens, running on LG webOS TVs.
 * **Controllers over CTM Bridge** — DualShock 4 / DualSense / Xbox / Steam Puck
   paired to the TV appear on the PC as native USB devices: input, rumble, LEDs
   and controller audio (DS4/DS5 speaker + headset, with headphone-jack
-  auto-route).
+  auto-route). DS4 pad-speaker audio currently wants **Steam Input enabled**
+  in games (direct-mode fix in progress); DS5 is best with **Steam Input
+  disabled** — keeps native DualSense features incl. adaptive triggers.
 * **Magic Remote → PC mouse + keyboard** while streaming: pointer, click,
   wheel, and D-pad/OK as arrow/enter keys — single input authority, no double
   cursor.
