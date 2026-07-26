@@ -6,6 +6,14 @@
 > show up on the gaming PC as native USB devices, with full input, rumble and
 > controller audio.
 
+## Support
+
+One person, late nights: controllers were just the start — native AMF
+streaming, a custom low-latency codec and a bigger webOS app are in the pipe.
+If CTM Bridge saved you some hassle, coffee speeds them up.
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ciprianteodormisaila)
+
 Moonlight TV is a community version of [Moonlight GameStream Client](https://moonlight-stream.org/),
 made for large screens, running on LG webOS TVs.
 
@@ -49,11 +57,3 @@ upstream [mariotaku/moonlight-tv](https://github.com/mariotaku/moonlight-tv)
 ([wiki](https://github.com/mariotaku/moonlight-tv/wiki)). Credits to
 [moonlight-embedded](https://github.com/irtimmer/moonlight-embedded) for the
 original libgamestream and decoder components.
-
-## Support
-
-One person, late nights: controllers were just the start — native AMF
-streaming, a custom low-latency codec and a bigger webOS app are in the pipe.
-If CTM Bridge saved you some hassle, coffee speeds them up.
-
-[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/ciprianteodormisaila)
