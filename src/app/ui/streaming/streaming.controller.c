@@ -76,10 +76,17 @@ typedef struct {
     int field;
     int cur, min, max, step;
     int gindex;             /* g_devices index (plug toggle) */
+    bool ds4_audio;         /* audio row cycles the DS4 subset (Auto/Headphones/Split) */
     lv_obj_t *row;
     lv_obj_t *slider;       /* NULL for non-slider rows */
     lv_obj_t *value_lbl;
 } ctm_row_t;
+
+/* DS4 audio row: cur is a POSITION in this subset, translated to/from the
+ * shared audio_mode value at read/write. Headset(3) forces the Layout B route
+ * 0xFF, Both(4) doubles as "Split" 0xDF (see controller_ds4.c patch_output);
+ * Auto leaves the service map's jack auto-route in charge. */
+static const int k_ctm_ds4_modes[] = {0 /* Auto */, 3 /* Headphones */, 4 /* Split */};
 
 static lv_obj_t   *s_ctm_panel      = NULL;   /* full-screen backdrop */
 static lv_obj_t   *s_ctm_sidebar    = NULL;
@@ -216,6 +223,11 @@ static bool on_event(lv_fragment_t *self, int code, void *userdata) {
             break;
         }
         case USER_STREAM_CLOSE: {
+            /* A failed auto-reconnect arrives here with the "Connecting..."
+             * dialog still open; close it before showing the next one. */
+            if (controller->progress) {
+                lv_msgbox_close(controller->progress);
+            }
             controller->progress = progress_dialog_create(locstr("Disconnecting..."));
             lv_obj_add_flag(controller->overlay, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(controller->stats, LV_OBJ_FLAG_HIDDEN);
@@ -389,6 +401,16 @@ static const char *ctm_audio_name(int m) {
     }
 }
 
+/* DS4 names for the same mode values (route semantics, not endpoints). */
+static const char *ctm_audio_name_ds4(int m) {
+    switch (m) {
+        case 0:  return "Auto";
+        case 3:  return "Headphones";
+        case 4:  return "Split";
+        default: return "?";
+    }
+}
+
 static const char *ctm_kind_title(const char *kind) {
     if (strcmp(kind, "ds5") == 0)  return "Sony DualSense (DS5)";
     if (strcmp(kind, "ds4") == 0)  return "Sony DualShock 4 (DS4)";
@@ -425,7 +447,9 @@ static void ctm_set_value_label(ctm_row_t *r) {
         return;
     }
     if (r->field == CTM_F_AUDIO) {
-        lv_label_set_text_fmt(r->value_lbl, "< %s >", ctm_audio_name(r->cur));
+        lv_label_set_text_fmt(r->value_lbl, "< %s >",
+                              r->ds4_audio ? ctm_audio_name_ds4(k_ctm_ds4_modes[r->cur])
+                                           : ctm_audio_name(r->cur));
     } else if (r->field == CTM_F_HAP) {
         lv_label_set_text_fmt(r->value_lbl, "%d.%d", r->cur / 100, (r->cur % 100) / 10);
     } else {
@@ -436,8 +460,9 @@ static void ctm_set_value_label(ctm_row_t *r) {
 /* Apply a new value to a settings row (clamp/wrap, sync slider + label, write). */
 static void ctm_apply_row(ctm_row_t *r, int val) {
     if (r->field == CTM_F_AUDIO) {
-        val %= 5;
-        if (val < 0) val += 5;
+        int n = r->ds4_audio ? (int) (sizeof k_ctm_ds4_modes / sizeof k_ctm_ds4_modes[0]) : 5;
+        val %= n;
+        if (val < 0) val += n;
     } else {
         if (val < r->min) val = r->min;
         if (val > r->max) val = r->max;
@@ -447,7 +472,9 @@ static void ctm_apply_row(ctm_row_t *r, int val) {
         lv_slider_set_value(r->slider, val, LV_ANIM_OFF);
     }
     ctm_set_value_label(r);
-    ctm_write_field(r->field, val);
+    /* DS4 audio rows store a subset position; the bridge wants the mode value. */
+    ctm_write_field(r->field, (r->field == CTM_F_AUDIO && r->ds4_audio)
+                                  ? k_ctm_ds4_modes[val] : val);
 }
 
 /* Pointer drag on a slider -> write back + refresh its value label. */
@@ -577,10 +604,20 @@ static void ctm_add_slider_row(const char *name, int field, int val, int min, in
     lv_obj_add_event_cb(card, ctm_detail_cancel_cb, LV_EVENT_CANCEL, r);
 }
 
-static void ctm_add_audio_row(int val) {
+static void ctm_add_audio_row(int val, bool ds4) {
     if (s_ctm_nrows >= (int) (sizeof s_ctm_rows / sizeof s_ctm_rows[0])) return;
     ctm_row_t *r = &s_ctm_rows[s_ctm_nrows++];
-    r->field = CTM_F_AUDIO; r->cur = val; r->min = 0; r->max = 4; r->step = 1;
+    r->field = CTM_F_AUDIO; r->min = 0; r->max = 4; r->step = 1;
+    r->ds4_audio = ds4;
+    if (ds4) {
+        /* Translate the stored mode to a subset position (unknown -> Auto). */
+        r->cur = 0;
+        for (int i = 0; i < (int) (sizeof k_ctm_ds4_modes / sizeof k_ctm_ds4_modes[0]); ++i) {
+            if (k_ctm_ds4_modes[i] == val) { r->cur = i; break; }
+        }
+    } else {
+        r->cur = val;
+    }
     r->gindex = 0; r->slider = NULL;
     lv_obj_t *card = ctm_detail_card();
     r->row = card;
@@ -648,7 +685,7 @@ static void ctm_build_detail(int row) {
     ctm_bridge_settings_t s;
     bool have = ctm_bridge_get_settings(d->index, &s);
     if (have && (strcmp(d->kind, "ds5") == 0 || strcmp(d->kind, "ds4") == 0)) {
-        ctm_add_audio_row(s.audio_mode);
+        ctm_add_audio_row(s.audio_mode, strcmp(d->kind, "ds4") == 0);
         if (strcmp(d->kind, "ds4") == 0) {
             /* DS4 firmware volume ceiling is 0x4f; no host latency/haptics block. */
             ctm_add_slider_row("Headset vol", CTM_F_HVOL, s.headset_volume_percent, 0, 0x4f, 1);

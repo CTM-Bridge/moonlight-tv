@@ -75,6 +75,18 @@ typedef struct {
 bool ctm_bridge_get_settings(int index, ctm_bridge_settings_t *out);
 void ctm_bridge_set_settings(int index, const ctm_bridge_settings_t *in);
 
+/* TV pointer -> host mouse (synthesizer, kind "hid"): auto-plugged by
+ * ctm_bridge_start; the Magic Remote row in the panel toggles it. While
+ * active, the streaming input path feeds pointer state here INSTEAD of the
+ * moonlight mouse channel (single input authority on the host). x/y in
+ * surface coords of a w x h surface; buttons bit0=left bit1=right
+ * bit2=middle; wheel in detents. */
+bool ctm_bridge_pointer_active(void);
+void ctm_bridge_pointer_feed(int x, int y, int w, int h, unsigned buttons, int wheel);
+/* Send a keyboard key (HID Keyboard/Keypad usage; SDL scancodes for arrows /
+ * Enter equal the HID usage) through the pointer device's keyboard report. */
+void ctm_bridge_pointer_feed_key(unsigned hid_usage, bool down);
+
 #ifdef __cplusplus
 }
 #endif

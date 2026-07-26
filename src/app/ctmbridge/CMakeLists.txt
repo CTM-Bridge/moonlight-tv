@@ -21,6 +21,7 @@ add_library(ctmbridge STATIC
     ${CTM_BRIDGE_DIR}/src/app/ui_devices.c
     ${CTM_BRIDGE_DIR}/src/app/ui_bridge.c
     ${CTM_BRIDGE_DIR}/src/shared/ctm_hid.c
+    ${CTM_BRIDGE_DIR}/src/shared/ctm_hostmouse.c
     ${CTM_BRIDGE_DIR}/src/shared/ctm_transport.c
     ${CTM_BRIDGE_DIR}/src/controllers/controller_common.c
     ${CTM_BRIDGE_DIR}/src/controllers/controller_ds5.c

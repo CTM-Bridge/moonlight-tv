@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.19)
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
+# CTM builds keep the upstream version; only this build number moves,
+# displayed as "<version> (<n>)" via APP_VERSION.
+set(CTM_BUILD_NUMBER 4)
+
 execute_process(COMMAND git describe --tags --abbrev=0 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         OUTPUT_VARIABLE MOONLIGHT_VERSION ERROR_QUIET)
 if (MOONLIGHT_VERSION)
@@ -216,7 +220,7 @@ set_target_properties(moonlight-lib PROPERTIES
 target_compile_definitions(moonlight-lib PUBLIC "$<$<CONFIG:DEBUG>:DEBUG>")
 string(LENGTH ${CMAKE_SOURCE_DIR} SOURCE_DIR_LENGTH)
 target_compile_definitions(moonlight-lib PUBLIC SOURCE_DIR_LENGTH=${SOURCE_DIR_LENGTH})
-target_compile_definitions(moonlight-lib PUBLIC APP_VERSION="${PROJECT_VERSION}" APPLOG_HOST=1)
+target_compile_definitions(moonlight-lib PUBLIC "APP_VERSION=\"${PROJECT_VERSION} (${CTM_BUILD_NUMBER})\"" APPLOG_HOST=1)
 target_compile_definitions(moonlight-lib PUBLIC LV_LVGL_H_INCLUDE_SIMPLE=1)
 
 target_include_directories(moonlight-lib PUBLIC ${CMAKE_SOURCE_DIR}/core/libgamestream)

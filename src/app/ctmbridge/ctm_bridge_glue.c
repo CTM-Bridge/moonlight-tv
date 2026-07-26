@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "ctm_state.h"   /* core API + shared globals (g_running, g_scan, ...) */
+#include "ctm_hostmouse.h" /* TV-pointer synthesizer feed (kind "hid") */
 #include "ctm_monitor.h" /* hotplug: connect/disconnect watch thread */
 
 static bool s_active = false;
@@ -51,8 +52,15 @@ static int glue_plug_all_locked(void)
     for (int i = 0; i < g_devices.count; ++i) {
         logical_device_t *item = &g_devices.items[i];
         const char *kind = bridge_kind_for_item(item);
-        if (kind == NULL || strcmp(kind, "hid") == 0) {
-            continue;   /* skip generic HID / non-controllers */
+        if (kind == NULL) {
+            continue;
+        }
+        if (strcmp(kind, "hid") == 0 &&
+            (item_is_tv_remote(item) || !item_is_mouse_or_keyboard(item))) {
+            /* Remote = the pointer synthesizer (plugged by ctm_bridge_start,
+             * never raw-relayed); other generic HID auto-plugs only when it
+             * is a real mouse/keyboard — vendor exotics stay manual. */
+            continue;
         }
         if (session_index_for_key(item->key) >= 0) {
             continue;   /* already plugged */
@@ -83,10 +91,17 @@ static void glue_hotplug_cb(void *ud, const ctm_controller_dev_t *dev, int prese
     pthread_mutex_unlock(&s_dev_mutex);
 }
 
-bool ctm_bridge_start(void)
+/* Core bring-up shared by ctm_bridge_start() and the panel entry points:
+ * stopSniff worker + agent discovery + enumerate + BT MAC publish. Without
+ * this, a controller plugged from the overlay panel alone (no "Use CTM
+ * Bridge" setting) attaches over usbip but falls into BT sniff mode --
+ * enumerates on the host yet feels dead. Idempotent. */
+static bool s_core_up = false;
+
+static void ctm_glue_ensure_core(void)
 {
-    if (s_active) {
-        return true;
+    if (s_core_up) {
+        return;
     }
     g_running = true;
 
@@ -100,9 +115,6 @@ bool ctm_bridge_start(void)
         }
     }
 
-    /* Locate the Windows agent, enumerate controllers, bridge the first one we
-     * recognise. Minimal: a single controller; multi-controller and hotplug
-     * (via ctm_monitor) are later refinements. */
     if (!discover_agent_once()) {
         log_append("ctm glue: no CTM agent found on the network");
     }
@@ -110,12 +122,27 @@ bool ctm_bridge_start(void)
     // Fill g_bt_macs so the stopSniff worker actually keeps the BT controllers
     // out of sniff mode (the worker reads this list every 500 ms).
     publish_bt_macs();
+    s_core_up = true;
+}
+
+bool ctm_bridge_start(void)
+{
+    if (s_active) {
+        return true;
+    }
+    ctm_glue_ensure_core();
 
     if (s_autoplug) {
         int count = ctm_bridge_plug_all();
         log_append("ctm glue: auto-plugged %d controller(s)", count);
     } else {
         log_append("ctm glue: auto-plug off, use the overlay panel to plug a controller");
+    }
+
+    /* Bridge the TV remote as a host mouse too (same policy as the standalone
+     * app: the pointer auto-plugs; the panel row can release/re-plug it). */
+    if (ctm_tv_pointer_plug()) {
+        log_append("ctm glue: TV pointer bridged");
     }
 
     s_active = true;
@@ -134,6 +161,7 @@ int ctm_bridge_list(ctm_bridge_dev_t *out, int max)
     if (out == NULL || max <= 0) {
         return 0;
     }
+    ctm_glue_ensure_core();
     pthread_mutex_lock(&s_dev_mutex);
     ctm_glue_enumerate();
     int n = 0;
@@ -152,7 +180,10 @@ int ctm_bridge_list(ctm_bridge_dev_t *out, int max)
         snprintf(out[n].kind, sizeof(out[n].kind), "%s", kind ? kind : "hid");
         snprintf(out[n].bus, sizeof(out[n].bus), "%s", item->bus);
         snprintf(out[n].mac, sizeof(out[n].mac), "%s", item->mac);
-        out[n].plugged = (session_index_for_key(item->key) >= 0);
+        /* The TV's own Magic Remote row IS the pointer synthesizer (raw relay
+         * of its LG-vendor descriptor would code-10 on Windows). */
+        out[n].plugged = item_is_tv_remote(item) ? ctm_tv_pointer_active()
+                                                 : (session_index_for_key(item->key) >= 0);
         n++;
     }
     pthread_mutex_unlock(&s_dev_mutex);
@@ -161,13 +192,18 @@ int ctm_bridge_list(ctm_bridge_dev_t *out, int max)
 
 bool ctm_bridge_plug_index(int index)
 {
+    ctm_glue_ensure_core();
     pthread_mutex_lock(&s_dev_mutex);
     bool ok = false;
     if (index >= 0 && index < g_devices.count) {
         logical_device_t *item = &g_devices.items[index];
-        ok = plug_in_item(item);
-        if (ok) {
-            publish_bt_macs();   /* keep the newly-plugged BT controller out of sniff mode */
+        if (item_is_tv_remote(item)) {
+            ok = ctm_tv_pointer_plug();
+        } else {
+            ok = plug_in_item(item);
+            if (ok) {
+                publish_bt_macs();   /* keep the newly-plugged BT controller out of sniff mode */
+            }
         }
         log_append("ctm glue: manual plug '%s' (%s) -> %s", item->name,
                    bridge_kind_for_item(item), ok ? "ok" : "failed");
@@ -180,14 +216,34 @@ void ctm_bridge_unplug_index(int index)
 {
     pthread_mutex_lock(&s_dev_mutex);
     if (index >= 0 && index < g_devices.count) {
-        stop_session(g_devices.items[index].key);
+        if (item_is_tv_remote(&g_devices.items[index])) {
+            ctm_tv_pointer_unplug();
+        } else {
+            stop_session(g_devices.items[index].key);
+        }
         log_append("ctm glue: manual unplug '%s'", g_devices.items[index].name);
     }
     pthread_mutex_unlock(&s_dev_mutex);
 }
 
+bool ctm_bridge_pointer_active(void)
+{
+    return ctm_tv_pointer_active();
+}
+
+void ctm_bridge_pointer_feed(int x, int y, int w, int h, unsigned buttons, int wheel)
+{
+    ctm_hostmouse_feed(x, y, w, h, buttons, wheel);
+}
+
+void ctm_bridge_pointer_feed_key(unsigned hid_usage, bool down)
+{
+    ctm_hostmouse_feed_key((uint8_t) hid_usage, down);
+}
+
 int ctm_bridge_plug_all(void)
 {
+    ctm_glue_ensure_core();
     pthread_mutex_lock(&s_dev_mutex);
     int count = glue_plug_all_locked();
     pthread_mutex_unlock(&s_dev_mutex);
@@ -255,7 +311,7 @@ void ctm_bridge_set_settings(int index, const ctm_bridge_settings_t *in)
 
 void ctm_bridge_stop(void)
 {
-    if (!s_active) {
+    if (!s_active && !s_core_up) {
         return;
     }
     /* Stop hotplug first: joins the monitor thread (do this WITHOUT holding
@@ -272,6 +328,7 @@ void ctm_bridge_stop(void)
     }
     log_append("ctm glue: bridge stopped");
     s_active = false;
+    s_core_up = false;
 }
 
 bool ctm_bridge_active(void)
