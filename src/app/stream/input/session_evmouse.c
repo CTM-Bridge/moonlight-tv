@@ -3,7 +3,6 @@
 #include "stream/session_priv.h"
 
 #include <errno.h>
-#include <assert.h>
 
 #include "logging.h"
 
@@ -18,11 +17,16 @@ void session_evmouse_init(session_evmouse_t *mouse, session_t *session) {
     mouse->lock = SDL_CreateMutex();
     mouse->cond = SDL_CreateCond();
     mouse->disabled = SDL_FALSE;
+    mouse->stopped = SDL_FALSE;
+    mouse->ready = SDL_FALSE;
     mouse->thread = SDL_CreateThread((SDL_ThreadFunction) mouse_worker, "sessinput", mouse);
 }
 
 void session_evmouse_deinit(session_evmouse_t *mouse) {
     if (mouse->thread != NULL) {
+        // Defensive: the worker may still be alive if the session was re-armed
+        // for a reconnect and then aborted before interrupting it again.
+        session_evmouse_interrupt(mouse);
         SDL_WaitThread(mouse->thread, NULL);
         mouse->thread = NULL;
     }
@@ -32,9 +36,26 @@ void session_evmouse_deinit(session_evmouse_t *mouse) {
     mouse->cond = NULL;
 }
 
+void session_evmouse_restart(session_evmouse_t *mouse) {
+    if (mouse->thread != NULL) {
+        // Normally already interrupted by the session interrupt that led here;
+        // re-issue in case the worker had not begun listening at that point.
+        session_evmouse_interrupt(mouse);
+        SDL_WaitThread(mouse->thread, NULL);
+        mouse->thread = NULL;
+    }
+    SDL_LockMutex(mouse->lock);
+    mouse->stopped = SDL_FALSE;
+    mouse->ready = SDL_FALSE;
+    mouse->dev = NULL;
+    SDL_UnlockMutex(mouse->lock);
+    mouse->thread = SDL_CreateThread((SDL_ThreadFunction) mouse_worker, "sessinput", mouse);
+}
+
 void session_evmouse_wait_ready(session_evmouse_t *mouse) {
     SDL_LockMutex(mouse->lock);
-    while (mouse->dev == NULL) {
+    // ready (not dev) so a failed open doesn't wait forever
+    while (!mouse->ready) {
         SDL_CondWait(mouse->cond, mouse->lock);
     }
     SDL_UnlockMutex(mouse->lock);
@@ -42,8 +63,12 @@ void session_evmouse_wait_ready(session_evmouse_t *mouse) {
 
 void session_evmouse_interrupt(session_evmouse_t *mouse) {
     SDL_LockMutex(mouse->lock);
-    assert (mouse->dev != NULL);
-    evmouse_interrupt(mouse->dev);
+    // dev may be NULL when the worker is still opening the device (or already
+    // exited); the stopped latch makes the request stick in either case.
+    mouse->stopped = SDL_TRUE;
+    if (mouse->dev != NULL) {
+        evmouse_interrupt(mouse->dev);
+    }
     SDL_UnlockMutex(mouse->lock);
 }
 
@@ -67,13 +92,24 @@ void session_evmouse_enable(session_evmouse_t *mouse) {
 
 static int mouse_worker(session_evmouse_t *mouse) {
     evmouse_t *dev = evmouse_open_default();
-    set_evmouse(mouse, dev);
+    // A stop requested while the device was being opened must not be lost
+    // (evmouse_listen would overwrite an interrupt issued before it starts):
+    // publish the open result and read the latch in one critical section, and
+    // skip listening entirely when a stop already came in.
+    SDL_LockMutex(mouse->lock);
+    mouse->dev = dev;
+    mouse->ready = SDL_TRUE;
+    SDL_bool stopped = mouse->stopped;
+    SDL_CondSignal(mouse->cond);
+    SDL_UnlockMutex(mouse->lock);
     if (dev == NULL) {
         commons_log_warn("Session", "No mouse device available");
         return ENODEV;
     }
-    commons_log_info("Session", "EvMouse opened");
-    evmouse_listen(dev, mouse_listener, mouse);
+    if (!stopped) {
+        commons_log_info("Session", "EvMouse opened");
+        evmouse_listen(dev, mouse_listener, mouse);
+    }
     set_evmouse(mouse, NULL);
     evmouse_close(dev);
     commons_log_info("Session", "EvMouse closed");

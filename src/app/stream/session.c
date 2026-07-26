@@ -102,6 +102,7 @@ void session_interrupt(session_t *session, bool quitapp, streaming_interrupt_rea
     session_input_interrupt(&session->input);
     session->quitapp = quitapp;
     session->interrupted = true;
+    session->interrupt_reason = reason;
 #if FEATURE_EMBEDDED_SHELL
     if (session->embed && session->embed_process) {
         embed_interrupt(session->embed_process);
@@ -139,10 +140,17 @@ bool session_start_input(session_t *session) {
 #endif
     session_input_started(&session->input);
     if (session->config.ctm_bridge) {
-        // Keep Moonlight's controllers open (UI nav still works); host sends are
-        // gated and the controller-arrival is suppressed, so nothing reaches the
-        // host. The bridge forwards the plugged controller to the game itself.
-        ctm_bridge_start();
+        if (ctm_bridge_active()) {
+            // Stream came back after an auto-reconnect: the bridge was left
+            // running so the controllers stayed plugged through the outage.
+            // Re-plug anything a longer outage dropped (no-op when still plugged).
+            ctm_bridge_plug_all();
+        } else {
+            // Keep Moonlight's controllers open (UI nav still works); host sends are
+            // gated and the controller-arrival is suppressed, so nothing reaches the
+            // host. The bridge forwards the plugged controller to the game itself.
+            ctm_bridge_start();
+        }
     }
     return true;
 }
