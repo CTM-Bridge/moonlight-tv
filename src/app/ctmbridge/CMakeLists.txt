@@ -1,18 +1,20 @@
 # CTM bridge core, embedded into moonlight-tv as a headless static lib.
 #
-# Compiles the bridge's headless core (the same sources as ctm-bridge-test-webos's
-# `ctmcore`) straight from the sibling repo, MINUS enet_transport.c: moonlight has
-# its own bundled ENet, so we exclude the bridge's ENet and satisfy the
-# enet_client_* references with enet_stub.c (TCP-only at runtime). No LVGL/SDL.
+# Compiles the bridge's headless core straight from the sibling ctm-bridge-webos
+# repo (github.com/CTM-Bridge/ctm-bridge-webos — the ONE bridge project: the
+# standalone TV app and this embeddable core are the same sources), MINUS
+# enet_transport.c: moonlight has its own bundled ENet, so we exclude the
+# bridge's ENet and satisfy the enet_client_* references with enet_stub.c
+# (TCP-only at runtime). No LVGL/SDL.
 #
 # The sibling repo location can be overridden with -DCTM_BRIDGE_DIR=...
 if(NOT DEFINED CTM_BRIDGE_DIR)
-    set(CTM_BRIDGE_DIR "${CMAKE_SOURCE_DIR}/../ctm-bridge-test-webos")
+    set(CTM_BRIDGE_DIR "${CMAKE_SOURCE_DIR}/../ctm-bridge-webos")
 endif()
 
 if(NOT EXISTS "${CTM_BRIDGE_DIR}/src/app/ctm_state.c")
     message(FATAL_ERROR "CTM bridge core not found at ${CTM_BRIDGE_DIR} "
-                        "(expected the ctm-bridge-test-webos repo next to moonlight-tv). "
+                        "(expected the ctm-bridge-webos repo cloned next to this one). "
                         "Set -DCTM_BRIDGE_DIR=<path> to override.")
 endif()
 
